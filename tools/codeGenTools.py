@@ -3,53 +3,66 @@ import os
 import re
 import subprocess
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from config.settings import settings
 from langchain_core.tools import tool
+import sys
+import subprocess
+import shutil
 
 
 coding_prompt = """
+
 # Role
 You are an **Elite Full-Stack Software Engineer** and **Polyglot Code Generator**.
-You are an expert in:
-- **Backend**: Python (FastAPI/Django), Node.js (Express/Nest), Go, Java.
-- **Frontend**: React (Next.js), Vue 3, TypeScript, Tailwind CSS, HTML5.
-- **Database**: PostgreSQL, MongoDB, Redis, SQL.
-- **DevOps**: Docker, Kubernetes, CI/CD pipelines.
+You transform technical specifications into production-grade, executable code files.
 
-# Input
-You will receive a **Technical Specification (Spec)** from the Lead Architect.
-This Spec will define the goal, the **target language**, and the required libraries.
+# CRITICAL: OUTPUT FORMAT (STRICT)
+You must output code using the following structure EXACTLY. 
+1. **Header**: Use `### filename.ext` for each file.
+2. **Code**: Follow immediately with a standard markdown code block.
+3. **No Bold**: Do NOT use bold text for filenames (e.g., do NOT write `**filename**`).
+4. **No Wrapper**: Do NOT wrap the entire response in a single code block.
 
-# Task
-Translate the Spec into **production-grade, executable code**.
-Your code must be clean, secure, and performant.
+--- FORMAT TEMPLATE START ---
+### filename.ext
+```language
+code here...
+```
+### another_file.ext
+```language
+code here...
+```
+--- FORMAT TEMPLATE END ---
+Example (Mental Model)
+User: "Create a calculator with two files, one is the main file and the other is a utils file." 
+You:
+### main.py
+```python
+from math_utils import add
 
-# Critical Guidelines (Universal)
-
-1.  **Language Adaptability**:
-    -   Detect the target language from the Spec.
-    -   Apply the specific "Best Practices" for that language (see below).
-
-2.  **Output Format (Strict)**:
-    -   Output **ONLY** valid code inside markdown code blocks (e.g., ```python```, ```typescript```).
-    -   **NO conversational filler**. Do not say "Here is the code". Just output the code.
-    -   If the Spec requires multiple files, use comments to separate them (e.g., `### filename.py`).
-
-3.  **Defensive Coding**:
-    -   Handle potential errors (e.g., try/catch in JS, try/except in Python).
-    -   Validate inputs. Never assume input is perfect.
-
-4.  **Self-Contained**:
-    -   The code should be as complete as possible. Avoid placeholders like `pass` or `// TODO` unless strictly necessary.
-
-# Language-Specific Standards
-
--   **Python**: Use Type Hints (`def foo(x: int) -> str:`), PEP 8, and `if __name__ == "__main__":` for scripts.
--   **JavaScript/TypeScript**: Use ES6+ syntax (`const/let`, arrow functions), Async/Await, and strict typing for TS.
--   **React/Vue**: Use Functional Components and Hooks (React) or Composition API (Vue).
--   **HTML/CSS**: Use semantic HTML tags and modern CSS (Flexbox/Grid).
-
+if __name__ == "__main__":
+    print(add(10, 5))
+```
+### math_utils.py
+```python
+def add(a, b):
+    return a + b
+(Other code...)
+```
+**Critical Guidelines**
+1. **Multiple Files**: If the spec requires multiple files (e.g., backend + frontend, or module + main), output them ALL in a single response using the template above.
+2. **Self-Contained**:
+    - Ensure main files import helper files correctly.
+    - ALWAYS include an entry point (e.g., if __name__ == "__main__": for Python) so the code can be run immediately.
+3. **No Conversational Filler**: Do not say "Here is the code". Do not explain the code unless asked. Just output the file markers and code blocks.
+4. **Defensive Coding**: Validate inputs and handle errors.
+**Language-Specific Standards**
+- Python: Use Type Hints, PEP 8.
+- Node.js: Use CommonJS (require) for simple scripts, or ES Modules (import) if specified.
+- Web: Semantic HTML, CSS Flexbox/Grid
+**Task**
+Translate the user's input into code of the format defined above. Ensure the code is clean, secure, and performant
 # Response Strategy
 1.  Read Spec -> Identify Language & Framework.
 2.  Plan Structure -> Imports/Classes/Functions.
@@ -57,17 +70,68 @@ Your code must be clean, secure, and performant.
 4.  Final Review -> Ensure no missing imports or syntax errors.
 """
 
-
+@tool
+def runCode(code_path: str,script_args: Optional[List[str]] = None) -> str:
+    """
+    This tool is used to run the code within the workspace directory.
+    Args:
+        code_path (str): The path of the code to be run.
+        script_args (Optional[List[str]]): The arguments to be passed to the code.
+    Returns:
+        str: STDOUT and STDERR execution results.
+    """
+    LANGUAGE_RUNNERS = {
+    ".py":  [sys.executable],           # Python: 使用当前环境
+    ".js":  ["node"],                   # JavaScript: 需要安装 Node.js
+    ".ts":  ["ts-node"],                # TypeScript: 需要安装 ts-node
+    ".sh":  ["bash"],                   # Shell: 使用 bash
+    ".go":  ["go", "run"],              # Go: 使用 go run 直接运行
+    ".rb":  ["ruby"],                   # Ruby
+    ".php": ["php"],                    # PHP
+}
+    if ".." in code_path or not code_path.startswith("workspace/"):
+         return "Error: Security Violation. Can only run scripts in 'workspace/' directory."
+    runner = LANGUAGE_RUNNERS.get(code_path.split(".")[-1])
+    if not runner:
+        return f"Error: No runner found for {code_path}, supported are: {', '.join(LANGUAGE_RUNNERS.keys())}"
+    executable = runner[0]
+    if executable != sys.executable and not shutil.which(executable):
+        return f"Error: The runtime '{executable}' is not installed or not in PATH."
+    safe_args = script_args if script_args else []
+    cmd = runner + safe_args + [code_path]
+    try:
+        print(f"Running code: {cmd}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        output = f"--- Execution Result ({executable}) ---\n"
+        if result.returncode == 0:
+            output += f"Success!\nSTDOUT:\n{result.stdout[:2000]}"
+        else:
+            output += f"Failed (Exit Code {result.returncode})\n"
+            output += f"STDERR:\n{result.stderr[:2000]}\n"
+            # 有些程序报错也会打在 stdout 里
+            if result.stdout:
+                output += f"STDOUT:\n{result.stdout[:2000]}"
+                
+        return output
+    except subprocess.TimeoutExpired:
+        return f"Error: The code execution timed out after 20 seconds."
+    except Exception as e:
+        return f"Error: {e}"
 
 @tool
 def generateCode(code_request: str, max_attempts: int = 5) -> Dict[str, str]:
     """
     This tool is used to generate code based on the code_request.
     What you need to do is to generate appropriate prompt for the goal of user's request.
+    This is a REQUIRED tool for creating code files. 
+    You CANNOT create code files by just writing text. You MUST use this tool.
     Then, give the prompt to this tool, it will use a coding model to generate the code.
-    For the code generated by the coding model, you need to extract the exact code from the response.
+    Use this to:
+    1. Write Python/JS/Go/and other languages code based on a spec.
+    2. SAVE that code to the 'workspace/' directory.
+    3. Return the file paths for execution.
     Args:
-        code_request (str): The request for the code generation.
+        code_request (str): The Detailed requirements for the code generation.
     Returns:
         Dict[str, str]: Extracted code mapped by filename.
     """
@@ -84,6 +148,7 @@ def generateCode(code_request: str, max_attempts: int = 5) -> Dict[str, str]:
     expected_min_files = max(1, len(expected_files))
 
     for attempt in range(1, max_attempts + 1):
+        print(f"[Coding Model] Generating code (Attempt {attempt}/{max_attempts})...") 
         response = model.invoke(messages)
         ai_code = response.content or ""
         extracted = parse_code_response(ai_code)
@@ -110,7 +175,9 @@ def generateCode(code_request: str, max_attempts: int = 5) -> Dict[str, str]:
 
         ruff_ok, ruff_errors = _run_ruff_check(extracted)
         if ruff_ok and validation_ok:
-            return extracted
+            for filename,code in extracted.items():
+                saveCode(filename,code)
+            return f"Successfully generated code and saved to workspace directory. The code is: {'\n'.join([f'{filename}: {code}' for filename, code in extracted.items()])}. The path of the saved code is: {'\n'.join([f'{filename}: {os.path.join(settings.workspaceDir, filename)}' for filename in extracted.keys()])}. You can now run the code using the runCode tool."
 
         if attempt < max_attempts:
             feedback = (
@@ -122,11 +189,13 @@ def generateCode(code_request: str, max_attempts: int = 5) -> Dict[str, str]:
             messages.append({"role": "assistant", "content": ai_code})
             messages.append({"role": "user", "content": feedback})
 
-    extracted["_warning"] = (
-        "Code generation did not pass validation or Ruff checks after "
-        f"{max_attempts} attempts. Output may contain lint errors."
-    )
-    return extracted
+    # extracted["_warning"] = (
+    #     "Code generation did not pass validation or Ruff checks after "
+    #     f"{max_attempts} attempts. Output may contain lint errors."
+    # )
+    for filename,code in extracted.items():
+        saveCode(filename,code)
+    return f"Successfully generated code and saved to workspace directory but failed to pass validation or Ruff checks. The code is: {'\n'.join([f'{filename}: {code}' for filename, code in extracted.items()])}. The path of the saved code is: {'\n'.join([f'{filename}: {os.path.join(settings.workspaceDir, filename)}' for filename in extracted.keys()])}. You can now run the code using the runCode tool."
 
 def parse_code_response(raw_response: str) -> Dict[str, str]:
     """
@@ -312,6 +381,24 @@ def _run_ruff_check(files: Dict[str, str]) -> Tuple[bool, str]:
         errors = f"{errors}\n{result.stderr.strip()}".strip()
     return False, errors or "Ruff reported issues but did not return details."
 
+def saveCode(filename: str,code: str) -> Optional[str] :
+    """
+    This tool is used to save the code to the code directory.
+    Args:
+        filename (str): The filename to save the code.
+        code (str): The code to save.
+    Returns:
+        Optional[str]: The path of the saved code.
+    """
+    os.makedirs(settings.workspaceDir, exist_ok=True)
+    try:
+        with open(os.path.join(settings.workspaceDir, filename), "w", encoding="utf-8") as handle:
+            handle.write(code)
+        print(f"Code saved to {os.path.join(settings.workspaceDir, filename)}")
+        return os.path.join(settings.workspaceDir, filename)
+    except Exception as e:
+        print(f"Error saving code: {e}")
+        return None
 
 # # 1) Python 单文件：应通过 ruff
 # print(generateCode("Write a Python function to compute Fibonacci with type hints and docstring."))
