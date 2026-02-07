@@ -191,7 +191,7 @@ def parse_code_response(raw_response: str) -> Dict[str, str]:
     return files
 
 def _strip_markdown(text: str) -> str:
-    """去除 Markdown 代码块标记和首尾空白"""
+    """Remove Markdown code block markers and leading/trailing whitespace."""
     text = text.strip()
 
     code_blocks = re.findall(r"```(?:[\w+-]+)?\s*(.*?)```", text, flags=re.DOTALL)
@@ -204,7 +204,7 @@ def _strip_markdown(text: str) -> str:
 
 
 def _detect_default_filename(raw_response: str) -> str:
-    """根据代码块语言或内容猜测默认文件名"""
+    """Guess default filename based on code block language or content."""
     language_match = re.search(r"```([\w+-]+)", raw_response or "")
     if not language_match:
         return "main.txt"
