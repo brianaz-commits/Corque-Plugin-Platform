@@ -17,4 +17,4 @@ def load_skill(skill_name: str) -> str:
             return f"Loaded skill: {skill_name}\n\n{skill['description']}\n\n{skill['content']}"
     # Skill not found
     available = ", ".join(s["name"] for s in SKILLS)
-    return f"Skill '{skill_name}' not found. Available skills: {available}"
+    return f"Skill '{skill_name}' not found. Available skills: {available}"-
